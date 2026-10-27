@@ -400,10 +400,10 @@ class PageCapture(QObject):
         try:
             self.project.screenshots_dir.mkdir(parents=True, exist_ok=True)
             stamp = time.strftime("%Y%m%d_%H%M%S")
-            prefix = "slice" if self._slice_rect else self._mode
+            prefix = "slice_" if self._slice_rect else ""
             path = (
                 self.project.screenshots_dir
-                / f"{prefix}_{self._mode}_{stamp}_{int(time.time() * 1000) % 1000:03d}.jpg"
+                / f"{prefix}{self._mode}_{stamp}_{int(time.time() * 1000) % 1000:03d}.jpg"
             )
             slice_meta = None
             if self._slice_rect and self._slice_spec:

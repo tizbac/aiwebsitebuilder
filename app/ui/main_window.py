@@ -225,6 +225,9 @@ class MainWindow(QMainWindow):
         self.search_engine = DuckDuckGoSearch(self)
         self._pending_attachments: list[str] = []
         self._pending_load: dict | None = None
+        self._reload_pending = False
+        self._capture_after_reload = None
+        self._reload_fallback: QTimer | None = None
         self._retired_agents: list[tuple[ChatAgent, float]] = []
         self._app_logs: deque[str] = deque(maxlen=400)
         self._settings_open = False
@@ -504,6 +507,18 @@ class MainWindow(QMainWindow):
         )
 
     def _close_current_project(self) -> None:
+        self._reload_pending = False
+        self._capture_after_reload = None
+        if self._reload_fallback is not None:
+            self._reload_fallback.stop()
+            self._reload_fallback.deleteLater()
+            self._reload_fallback = None
+        self._reload_pending = False
+        self._capture_after_reload = None
+        if self._reload_fallback is not None:
+            self._reload_fallback.stop()
+            self._reload_fallback.deleteLater()
+            self._reload_fallback = None
         if self._pending_load is not None:
             timer = self._pending_load.get("timer")
             if timer:
@@ -743,6 +758,48 @@ class MainWindow(QMainWindow):
         self.chat_view.add_message(message)
         if message.get("role") in ("user", "tool"):
             self.chat_view.scroll_to_bottom(force=True)
+        if (
+            message.get("role") == "tool"
+            and not message.get("error")
+            and message.get("name") in ("write_file", "edit_file")
+        ):
+            self._reload_preview_after_edit()
+
+    def _reload_preview_after_edit(self) -> None:
+        """Refresh the live preview after the agent changes a served file."""
+        if not self.project or not self.server.running or not self._current_url:
+            return
+        if not self._current_url.startswith(self.project.server_url):
+            return
+        self._reload_pending = True
+        if self._reload_fallback is not None:
+            self._reload_fallback.stop()
+            self._reload_fallback.deleteLater()
+        fallback = QTimer(self)
+        fallback.setSingleShot(True)
+        fallback.setInterval(8000)
+        fallback.timeout.connect(self._reload_fallback_fired)
+        fallback.start()
+        self._reload_fallback = fallback
+        self.webview.reload()
+
+    def _reload_fallback_fired(self) -> None:
+        if self._reload_fallback is not None:
+            self._reload_fallback.deleteLater()
+            self._reload_fallback = None
+        if not self._reload_pending:
+            return
+        self._reload_pending = False
+        callback = self._capture_after_reload
+        self._capture_after_reload = None
+        if callback:
+            callback()
+
+    def _run_after_preview_ready(self, callback) -> None:
+        if not self._reload_pending:
+            callback()
+            return
+        self._capture_after_reload = callback
 
     def _on_message_delta(self, message_id: str, kind: str, text: str) -> None:
         if self.chat_view:
@@ -1008,7 +1065,6 @@ class MainWindow(QMainWindow):
         if not self.page_capture or not self.project:
             callback({"results": [], "errors": ["No preview is available."]})
             return
-        self._set_activity("Capturing full-page preview…")
         capture = self.page_capture
 
         def done(payload: dict) -> None:
@@ -1017,7 +1073,13 @@ class MainWindow(QMainWindow):
             self._set_activity("Working…" if self.agent and self.agent.busy else "Ready")
             callback(payload)
 
-        capture.capture(modes, done)
+        def start() -> None:
+            if self.page_capture is not capture:
+                return
+            self._set_activity("Capturing full-page preview…")
+            capture.capture(modes, done)
+
+        self._run_after_preview_ready(start)
 
     def _slice_for_agent(
         self, modes: list[str], selector: str, index: int, padding: int, callback
@@ -1025,7 +1087,6 @@ class MainWindow(QMainWindow):
         if not self.page_capture or not self.project:
             callback({"results": [], "errors": ["No preview is available."]})
             return
-        self._set_activity(f"Capturing page slice around {selector}…")
         capture = self.page_capture
 
         def done(payload: dict) -> None:
@@ -1034,7 +1095,13 @@ class MainWindow(QMainWindow):
             self._set_activity("Working…" if self.agent and self.agent.busy else "Ready")
             callback(payload)
 
-        capture.capture_slice(modes, selector, index, padding, done)
+        def start() -> None:
+            if self.page_capture is not capture:
+                return
+            self._set_activity(f"Capturing page slice around {selector}…")
+            capture.capture_slice(modes, selector, index, padding, done)
+
+        self._run_after_preview_ready(start)
 
     def _resolve_target(self, target: str) -> str:
         target = (target or "").strip()
@@ -1119,6 +1186,16 @@ class MainWindow(QMainWindow):
         self._elide_labels()
         self.backButton.setEnabled(self.webview.history().canGoBack())
         self.forwardButton.setEnabled(self.webview.history().canGoForward())
+        if self._reload_pending:
+            self._reload_pending = False
+            if self._reload_fallback is not None:
+                self._reload_fallback.stop()
+                self._reload_fallback.deleteLater()
+                self._reload_fallback = None
+            callback = self._capture_after_reload
+            self._capture_after_reload = None
+            if callback:
+                QTimer.singleShot(300, callback)
         pending = self._pending_load
         if pending is None:
             if not ok:
@@ -1410,6 +1487,12 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             self.agent.stop()
+        self._reload_pending = False
+        self._capture_after_reload = None
+        if self._reload_fallback is not None:
+            self._reload_fallback.stop()
+            self._reload_fallback.deleteLater()
+            self._reload_fallback = None
         if self._pending_load is not None:
             timer = self._pending_load.get("timer")
             if timer:
