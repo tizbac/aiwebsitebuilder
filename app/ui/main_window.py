@@ -158,7 +158,16 @@ FILL_JS = """
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     var kind = el.type || '';
     if (kind === 'checkbox' || kind === 'radio') {
-      el.checked = value === true || /^(true|1|yes|on|checked)$/i.test(String(value));
+      var desired = value === true || /^(true|1|yes|on|checked)$/i.test(String(value));
+      if (kind === 'radio') {
+        if (desired) {
+          if (!el.checked) el.click();
+        } else if (el.checked) {
+          el.checked = false;
+        }
+      } else if (el.checked !== desired) {
+        el.click();
+      }
     } else if (tag === 'select') {
       el.value = String(value);
       if (el.value !== String(value)) {
@@ -1270,6 +1279,7 @@ class MainWindow(QMainWindow):
                 return
             state["done"] = True
             timer.stop()
+            timer.deleteLater()
             payload = dict(result) if isinstance(result, dict) else {}
             if not payload:
                 payload = {
@@ -1346,11 +1356,16 @@ class MainWindow(QMainWindow):
         timer.start()
         try:
             if action == "fill":
+                submit_arg = args.get("submit")
+                if isinstance(submit_arg, str):
+                    submit_flag = submit_arg.strip().lower() in ("1", "true", "yes", "on")
+                else:
+                    submit_flag = bool(submit_arg)
                 code = (
                     FILL_JS.replace("__SELECTOR__", json.dumps(selector))
                     .replace("__INDEX__", str(index))
                     .replace("__VALUE__", json.dumps(str(args.get("value") or "")))
-                    .replace("__SUBMIT__", "true" if args.get("submit") else "false")
+                    .replace("__SUBMIT__", "true" if submit_flag else "false")
                 )
             else:
                 code = CLICK_JS.replace("__SELECTOR__", json.dumps(selector)).replace(
