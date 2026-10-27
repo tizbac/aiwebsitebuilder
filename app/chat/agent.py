@@ -168,20 +168,14 @@ class ChatAgent(QObject):
     # ---------------------------------------------------------- API payload
     def _api_messages(self) -> list[dict]:
         start, marker = self.history.last_compaction()
-        messages: list[dict] = [
-            {"role": "system", "content": self._system_prompt()},
-        ]
+        system_content = self._system_prompt()
         if marker:
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "Summary of the earlier conversation, which was compacted to save "
-                        "context. Treat it as accurate history:\n\n"
-                        + str(marker.get("summary") or "")
-                    ),
-                }
+            system_content += (
+                "\n\nEARLIER CONVERSATION SUMMARY (older messages were compacted to "
+                "save context; treat this as accurate history):\n\n"
+                + str(marker.get("summary") or "")
             )
+        messages: list[dict] = [{"role": "system", "content": system_content}]
 
         pending_images: list[tuple[str, list[dict]]] = []
 

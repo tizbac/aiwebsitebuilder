@@ -225,7 +225,7 @@ class MainWindow(QMainWindow):
         self.search_engine = DuckDuckGoSearch(self)
         self._pending_attachments: list[str] = []
         self._pending_load: dict | None = None
-        self._retired_agents: list[ChatAgent] = []
+        self._retired_agents: list[tuple[ChatAgent, float]] = []
         self._app_logs: deque[str] = deque(maxlen=400)
         self._settings_open = False
         self._settings_dialog: SettingsDialog | None = None
@@ -513,13 +513,14 @@ class MainWindow(QMainWindow):
             self.page_capture.abort()
             QTimer.singleShot(3000, self.page_capture.deleteLater)
             self.page_capture = None
+        self.search_engine.close()
         if self.agent is not None:
             try:
                 self.agent.disconnect()
             except (TypeError, RuntimeError):
                 pass
             self.agent.shutdown()
-            self._retired_agents.append(self.agent)
+            self._retired_agents.append((self.agent, time.monotonic()))
             self.agent = None
         self.server.stop(emit=False)
         self._clear_attachments()
@@ -529,10 +530,13 @@ class MainWindow(QMainWindow):
         self._current_url = ""
 
     def _prune_retired_agents(self) -> None:
-        remaining: list[ChatAgent] = []
-        for agent in self._retired_agents:
-            if agent.has_running_workers():
-                remaining.append(agent)
+        remaining: list[tuple[ChatAgent, float]] = []
+        now = time.monotonic()
+        for agent, retired_at in self._retired_agents:
+            # Keep a grace period for main-thread callbacks (click/fill/search)
+            # that are not represented by a QThread.
+            if agent.has_running_workers() or (now - retired_at) < 35.0:
+                remaining.append((agent, retired_at))
             else:
                 agent.deleteLater()
         self._retired_agents = remaining
@@ -1418,7 +1422,7 @@ class MainWindow(QMainWindow):
             self.agent.shutdown()
             if not self.agent.wait_for_workers(20000):
                 self.agent.force_stop_workers()
-        for agent in list(self._retired_agents):
+        for agent, _retired_at in list(self._retired_agents):
             agent.shutdown()
             if not agent.wait_for_workers(20000):
                 agent.force_stop_workers()

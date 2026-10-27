@@ -277,7 +277,8 @@ class MessageWidget(QFrame):
         grid.setContentsMargins(0, 4, 0, 0)
         grid.setHorizontalSpacing(8)
         grid.setVerticalSpacing(4)
-        thumb_w, thumb_h = (150, 110) if self.role == "user" else (180, 120)
+        thumb_w, thumb_h = (140, 100) if self.role == "user" else (180, 120)
+        columns = 3 if self.role == "user" else 2
         for index, image in enumerate(images):
             card = QWidget(holder)
             vbox = QVBoxLayout(card)
@@ -312,7 +313,7 @@ class MessageWidget(QFrame):
             label.setObjectName("attachmentName")
             vbox.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
             vbox.addWidget(label, 0, Qt.AlignmentFlag.AlignLeft)
-            grid.addWidget(card, index // 4, index % 4)
+            grid.addWidget(card, index // columns, index % columns)
         return holder
 
     def _image_path(self, image: dict) -> str:
