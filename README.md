@@ -26,7 +26,8 @@ The agent can read and edit files, search the project, drive the preview in a re
   - `screenshot` captures the **entire page** (not just the visible viewport) for desktop and for a real 390×844 phone viewport. Both modes are returned by default, so the model can check responsiveness.
   - The phone image is rendered in a hidden, off-screen browser view; the main window layout is never disturbed.
   - `screenslice` captures a readable close-up around any CSS selector (± 300 px by default).
-- **Browser tools** — load a URL/path and get JS console errors plus screenshots; click elements by selector; fill inputs/textareas/selects/contenteditable fields and optionally submit their form; execute arbitrary JavaScript in the live page with `run_js`.
+- **Browser tools** — load a URL/path and get JS console errors plus screenshots; click elements by selector or by coordinates; fill inputs/textareas/selects/contenteditable fields and optionally submit their form; execute arbitrary JavaScript in the live page with `run_js`.
+- **Click-to-reference** — the chat's **Pick element** button lets you click any page element. Its unique CSS selector, attributes, XPath, element box, absolute page coordinates and viewport coordinates are appended to the message box as text, ready for you to add your own instructions. Nothing is sent automatically.
 - **Git commits** — stage and commit exactly the public files the agent specifies, with a commit message.
 - **Agent questions** — `ask_user` pauses the agent and shows a modal dialog with suggested choices plus a free-form answer.
 - **Server log tool** — the agent can inspect PHP request logs, warnings and fatal errors.
@@ -124,6 +125,8 @@ When an existing directory is chosen, the actual public root path is stored in `
 | `web_search` | Search DuckDuckGo and return titles, URLs and snippets. |
 
 Every tool result is text; screenshots and reference images are attached to the next model turn as images, so any vision-capable model can inspect them.
+
+A **Pick element** button in the chat lets *you* click an element in the preview; a `[Page element reference]` block with its selector, attributes and coordinates is appended to the message box (it is never sent automatically).
 
 ## Screenshots
 

@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 from PyQt6 import uic
 from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QDesktopServices, QFontMetrics, QIcon, QKeySequence, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFontMetrics, QIcon, QKeySequence, QPixmap, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -289,6 +289,241 @@ FILL_JS = """
 """
 
 
+PICK_JS = """
+(function () {
+  if (window.__aiwb_pick_cleanup) {
+    try { window.__aiwb_pick_cleanup(); } catch (e) {}
+  }
+  window.__aiwb_pick_result = null;
+  var doc = document;
+  var root = doc.documentElement;
+  var overlay = doc.createElement('div');
+  overlay.setAttribute('data-aiwb-pick', 'overlay');
+  overlay.style.cssText = [
+    'position:fixed', 'inset:0', 'width:100vw', 'height:100vh',
+    'z-index:2147483647', 'cursor:crosshair',
+    'background:rgba(14,16,20,0.06)', 'margin:0', 'padding:0',
+    'display:block', 'pointer-events:auto'
+  ].join(';');
+  var highlight = doc.createElement('div');
+  highlight.setAttribute('data-aiwb-pick', 'highlight');
+  highlight.style.cssText = [
+    'position:fixed', 'pointer-events:none', 'z-index:2147483646',
+    'border:2px solid #63d2a4', 'border-radius:3px',
+    'background:rgba(99,210,164,0.10)',
+    'box-shadow:0 0 0 1px rgba(0,0,0,.35)',
+    'display:none', 'box-sizing:border-box'
+  ].join(';');
+  var pill = doc.createElement('div');
+  pill.setAttribute('data-aiwb-pick', 'pill');
+  pill.style.cssText = [
+    'position:fixed', 'left:50%', 'top:14px', 'transform:translateX(-50%)',
+    'z-index:2147483647', 'pointer-events:none',
+    'background:rgba(10,13,18,0.94)', 'border:1px solid #2c3a47',
+    'color:#dce6f2', 'font:12px/1.4 system-ui,-apple-system,sans-serif',
+    'padding:8px 14px', 'border-radius:9px',
+    'box-shadow:0 8px 30px rgba(0,0,0,.35)', 'white-space:nowrap'
+  ].join(';');
+  pill.textContent = 'Click an element to add a page reference · Esc to cancel';
+  overlay.appendChild(highlight);
+  overlay.appendChild(pill);
+  (doc.body || root).appendChild(overlay);
+
+  var lastX = null, lastY = null;
+
+  function isOwn(node) {
+    return !!(node && node.closest && node.closest('[data-aiwb-pick]'));
+  }
+  function underlying(x, y) {
+    var list = doc.elementsFromPoint
+      ? doc.elementsFromPoint(x, y)
+      : [doc.elementFromPoint(x, y)];
+    for (var i = 0; i < list.length; i++) {
+      if (!isOwn(list[i])) return list[i];
+    }
+    return null;
+  }
+  function updateBox(x, y) {
+    lastX = x; lastY = y;
+    var el = underlying(x, y);
+    if (!el) {
+      highlight.style.display = 'none';
+      pill.textContent = 'Click an element to add a reference · Esc to cancel';
+      return;
+    }
+    var r = el.getBoundingClientRect();
+    highlight.style.display = 'block';
+    highlight.style.left = Math.max(0, r.left) + 'px';
+    highlight.style.top = Math.max(0, r.top) + 'px';
+    highlight.style.width = Math.max(1, Math.min(r.width, window.innerWidth)) + 'px';
+    highlight.style.height = Math.max(1, Math.min(r.height, window.innerHeight)) + 'px';
+    var label = el.tagName ? el.tagName.toLowerCase() : 'element';
+    if (el.id) label += '#' + el.id;
+    pill.textContent = 'Click to reference <' + label + '> · Esc to cancel';
+  }
+  function cssEscape(value) {
+    if (window.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '-');
+  }
+  function selectorFor(el) {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) {
+      var idSel = '#' + cssEscape(el.id);
+      try {
+        if (doc.querySelectorAll(idSel).length === 1) return idSel;
+      } catch (e) {}
+    }
+    var parts = [];
+    var node = el;
+    while (node && node.nodeType === 1) {
+      var tag = (node.tagName || '').toLowerCase();
+      if (!tag) break;
+      var part = tag;
+      var parent = node.parentElement;
+      if (parent) {
+        var same = [];
+        for (var i = 0; i < parent.children.length; i++) {
+          if (parent.children[i].tagName === node.tagName) same.push(parent.children[i]);
+        }
+        if (same.length > 1) {
+          part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+        }
+      }
+      parts.unshift(part);
+      var candidate = parts.join(' > ');
+      try {
+        if (doc.querySelectorAll(candidate).length === 1) return candidate;
+      } catch (e) {}
+      if (node === root) break;
+      node = parent;
+    }
+    return parts.join(' > ');
+  }
+  function xpathFor(el) {
+    if (!el || el.nodeType !== 1) return '';
+    var parts = [];
+    var node = el;
+    while (node && node.nodeType === 1) {
+      var tag = (node.tagName || '').toLowerCase();
+      var index = 1;
+      var sib = node.previousElementSibling;
+      while (sib) {
+        if (sib.tagName === node.tagName) index++;
+        sib = sib.previousElementSibling;
+      }
+      parts.unshift(tag + '[' + index + ']');
+      if (node === root) break;
+      node = node.parentElement;
+    }
+    return '/' + parts.join('/');
+  }
+  function attrsFor(el) {
+    var out = {};
+    if (!el.attributes) return out;
+    var count = 0;
+    for (var i = 0; i < el.attributes.length && count < 40; i++) {
+      var attr = el.attributes[i];
+      var value = String(attr.value == null ? '' : attr.value);
+      if (value.length > 300) value = value.slice(0, 300) + '…';
+      out[attr.name] = value;
+      count++;
+    }
+    return out;
+  }
+  function collect(el, ev) {
+    var rect = el.getBoundingClientRect();
+    var sx = window.scrollX || window.pageXOffset || 0;
+    var sy = window.scrollY || window.pageYOffset || 0;
+    var text = '';
+    try {
+      text = (el.innerText || el.textContent || el.value ||
+        el.getAttribute('aria-label') || el.getAttribute('alt') || '')
+        .trim().slice(0, 500);
+    } catch (e) {}
+    var classes = [];
+    try {
+      classes = Array.prototype.slice.call(el.classList || []).slice(0, 20);
+    } catch (e) {}
+    return {
+      cancelled: false,
+      url: location.href,
+      title: document.title || '',
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      id: el.id || '',
+      classes: classes,
+      attributes: attrsFor(el),
+      selector: selectorFor(el),
+      xpath: xpathFor(el),
+      text: text,
+      viewport: {width: window.innerWidth, height: window.innerHeight},
+      scroll: {x: sx, y: sy},
+      dpr: window.devicePixelRatio || 1,
+      click: {
+        viewportX: ev.clientX, viewportY: ev.clientY,
+        pageX: ev.clientX + sx, pageY: ev.clientY + sy
+      },
+      rect: {
+        viewportX: rect.left, viewportY: rect.top,
+        pageX: rect.left + sx, pageY: rect.top + sy,
+        width: rect.width, height: rect.height
+      }
+    };
+  }
+  function cleanup() {
+    doc.removeEventListener('keydown', onKey, true);
+    window.removeEventListener('scroll', onScroll, true);
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    window.__aiwb_pick_cleanup = null;
+  }
+  function finish(result) {
+    window.__aiwb_pick_result = result;
+    cleanup();
+  }
+  function onMove(e) { updateBox(e.clientX, e.clientY); }
+  function onClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    if (e.button !== 0) return;
+    var el = underlying(e.clientX, e.clientY) || doc.body || root;
+    finish(collect(el, e));
+  }
+  function onKey(e) {
+    if (e.key === 'Escape' || e.keyCode === 27) {
+      e.preventDefault();
+      e.stopPropagation();
+      finish({cancelled: true});
+    }
+  }
+  function onScroll() {
+    if (lastX !== null) updateBox(lastX, lastY);
+  }
+  function onWheel(e) {
+    e.preventDefault();
+    window.scrollBy(e.deltaX || 0, e.deltaY || 0);
+    setTimeout(onScroll, 0);
+  }
+  function onContext(e) { e.preventDefault(); }
+  overlay.addEventListener('mousemove', onMove);
+  overlay.addEventListener('click', onClick);
+  overlay.addEventListener('wheel', onWheel, {passive: false});
+  overlay.addEventListener('contextmenu', onContext);
+  doc.addEventListener('keydown', onKey, true);
+  window.addEventListener('scroll', onScroll, true);
+  window.__aiwb_pick_cleanup = cleanup;
+  try { overlay.tabIndex = -1; overlay.focus(); } catch (e) {}
+  return true;
+})()
+"""
+
+PICK_POLL_JS = "window.__aiwb_pick_result || null"
+PICK_CLEAR_JS = "window.__aiwb_pick_result = null;"
+PICK_CANCEL_JS = (
+    "if (window.__aiwb_pick_cleanup) { try { window.__aiwb_pick_cleanup(); } catch (e) {} } "
+    "window.__aiwb_pick_result = null;"
+)
+
+
 RUN_JS_WRAPPER = """
 (function () {
   var code = __CODE__;
@@ -356,6 +591,74 @@ def _format_js_value(value) -> str:
         return str(value)
 
 
+def _num(value) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number - round(number)) < 0.05:
+        return str(int(round(number)))
+    return f"{number:.1f}"
+
+
+def _format_page_reference(ref: dict) -> str:
+    if not isinstance(ref, dict) or ref.get("cancelled"):
+        return ""
+    tag = str(ref.get("tag") or "element").lower()
+    element_id = str(ref.get("id") or "")
+    classes = [str(item) for item in (ref.get("classes") or []) if str(item)]
+    label = tag + (("#" + element_id) if element_id else "")
+    if classes:
+        label += "." + ".".join(classes[:4])
+    click = ref.get("click") or {}
+    rect = ref.get("rect") or {}
+    viewport = ref.get("viewport") or {}
+    scroll = ref.get("scroll") or {}
+    attrs = ref.get("attributes") or {}
+    attr_parts = []
+    if isinstance(attrs, dict):
+        for name, value in list(attrs.items())[:20]:
+            clean = " ".join(str(value).split())[:160]
+            attr_parts.append(f'{name}="{clean}"')
+        if len(attrs) > 20:
+            attr_parts.append(f"… (+{len(attrs) - 20} more)")
+    text = " ".join(str(ref.get("text") or "").split())[:400]
+    lines = [
+        "[Page element reference]",
+        f"URL: {ref.get('url') or ''}",
+        f"Title: {str(ref.get('title') or '')[:200]}",
+        f"Selector: {ref.get('selector') or '(unavailable)'}",
+        f"XPath: {ref.get('xpath') or '(unavailable)'}",
+        (
+            f"Element: <{label}>"
+            + (f"  Text: {text!r}" if text else "")
+        ),
+        "Attributes: " + (" ".join(attr_parts) if attr_parts else "(none)"),
+        (
+            "Click — viewport: "
+            f"x={_num(click.get('viewportX'))}, y={_num(click.get('viewportY'))}; "
+            "absolute page: "
+            f"x={_num(click.get('pageX'))}, y={_num(click.get('pageY'))}"
+        ),
+        (
+            "Element box — viewport: "
+            f"x={_num(rect.get('viewportX'))}, y={_num(rect.get('viewportY'))}; "
+            "absolute page: "
+            f"x={_num(rect.get('pageX'))}, y={_num(rect.get('pageY'))}; "
+            f"size: {_num(rect.get('width'))}×{_num(rect.get('height'))} CSS px"
+        ),
+        (
+            f"Page scroll at pick: x={_num(scroll.get('x'))}, y={_num(scroll.get('y'))}; "
+            f"viewport: {_num(viewport.get('width'))}×{_num(viewport.get('height'))} CSS px"
+        ),
+        (
+            "Note: clickpoint coordinates are viewport-relative while the page is at the "
+            "same scroll position. Use the selector or absolute page coordinates otherwise."
+        ),
+    ]
+    return "\n".join(lines)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, project_path: str | None = None) -> None:
         super().__init__()
@@ -380,6 +683,9 @@ class MainWindow(QMainWindow):
         self._settings_dialog: SettingsDialog | None = None
         self._ask_dialog: AskUserDialog | None = None
         self._ask_dialog_open = False
+        self._pick_active = False
+        self._pick_timer: QTimer | None = None
+        self._pick_started = 0.0
         self._current_url = ""
         self._qt_settings = QSettings("AIWebSiteBuilder", "AIWebSiteBuilder")
 
@@ -432,6 +738,7 @@ class MainWindow(QMainWindow):
         self.sendButton.clicked.connect(self.send_message)
         self.stopButton.clicked.connect(self.stop_agent)
         self.attachButton.clicked.connect(self.attach_images)
+        self.pickButton.clicked.connect(self._toggle_element_pick)
         self.backButton.clicked.connect(self.webview.back)
         self.forwardButton.clicked.connect(self.webview.forward)
         self.reloadButton.clicked.connect(self.reload_preview)
@@ -658,6 +965,7 @@ class MainWindow(QMainWindow):
         )
 
     def _close_current_project(self) -> None:
+        self._cancel_element_pick(silent=True)
         self._reload_pending = False
         self._capture_after_reload = None
         if self._reload_fallback is not None:
@@ -670,6 +978,7 @@ class MainWindow(QMainWindow):
             self._reload_fallback.stop()
             self._reload_fallback.deleteLater()
             self._reload_fallback = None
+        self._cancel_element_pick(silent=True)
         if self._pending_load is not None:
             timer = self._pending_load.get("timer")
             if timer:
@@ -762,8 +1071,11 @@ class MainWindow(QMainWindow):
         self._refresh_recent_menu()
 
     def _set_project_ui(self, enabled: bool) -> None:
+        if not enabled and self._pick_active:
+            self._cancel_element_pick(silent=True)
         self.inputEdit.setEnabled(enabled)
         self.attachButton.setEnabled(enabled)
+        self.pickButton.setEnabled(enabled and not (self.agent and self.agent.busy))
         self.sendButton.setEnabled(enabled and not (self.agent and self.agent.busy))
         self.stopButton.setEnabled(False)
         self.actionCompact.setEnabled(enabled)
@@ -892,6 +1204,8 @@ class MainWindow(QMainWindow):
             return
         if self.agent.busy:
             return
+        if self._pick_active:
+            self._cancel_element_pick(silent=True)
         if not self.settings.is_configured():
             self.open_settings()
             return
@@ -905,6 +1219,9 @@ class MainWindow(QMainWindow):
         self.inputEdit.setFocus()
 
     def stop_agent(self) -> None:
+        if self._pick_active:
+            self._cancel_element_pick()
+            return
         if self.agent and self.agent.busy:
             self.agent.stop()
 
@@ -1003,10 +1320,13 @@ class MainWindow(QMainWindow):
 
     def _on_busy_changed(self, busy: bool) -> None:
         enabled = self.project is not None
+        if busy and self._pick_active:
+            self._cancel_element_pick(silent=True)
+        self.pickButton.setEnabled(enabled and not busy)
         self.sendButton.setEnabled(enabled and not busy)
         self.sendButton.setText("Working…" if busy else "Send")
         self.stopButton.setEnabled(busy)
-        self.actionStop.setEnabled(busy)
+        self.actionStop.setEnabled(busy or self._pick_active)
         self.attachButton.setEnabled(enabled)
         if busy:
             self.inputHint.setText("The agent is working — you can draft your next message")
@@ -1332,6 +1652,9 @@ class MainWindow(QMainWindow):
         self._set_activity("Ready")
 
     def _on_load_finished(self, ok: bool) -> None:
+        if self._pick_active:
+            self._cancel_element_pick(silent=True)
+            self._set_status_message("Element pick cancelled because the page changed.")
         if not self.project:
             self.backButton.setEnabled(False)
             self.forwardButton.setEnabled(False)
@@ -1567,6 +1890,127 @@ class MainWindow(QMainWindow):
             self.webview.page().runJavaScript(code, on_js)
         except (RuntimeError, AttributeError) as exc:
             finish({"ok": False, "error": str(exc)})
+
+    def _set_pick_button(self, active: bool) -> None:
+        self.pickButton.setText("Cancel pick" if active else "Pick element")
+        self.pickButton.setProperty("picking", "true" if active else "false")
+        self.pickButton.style().unpolish(self.pickButton)
+        self.pickButton.style().polish(self.pickButton)
+        self.pickButton.update()
+        self.actionStop.setEnabled(active or bool(self.agent and self.agent.busy))
+
+    def _toggle_element_pick(self) -> None:
+        if self._pick_active:
+            self._cancel_element_pick()
+            return
+        if not self.project:
+            self._set_status_message("Open a project first.")
+            return
+        if self.agent and self.agent.busy:
+            self._set_status_message("Wait for the agent to finish before picking an element.")
+            return
+        if not self._current_url or not self._current_url.startswith(("http://", "https://")):
+            self._set_status_message("Load the preview page before picking an element.")
+            return
+        self._pick_active = True
+        self._pick_started = time.monotonic()
+        self._set_pick_button(True)
+        self.inputHint.setText("Click an element in the preview — Esc or the button cancels")
+        self._set_activity("Picking a page element…")
+        self._set_status_message(
+            "Click an element in the preview to append its reference to the message."
+        )
+        try:
+            self.webview.page().runJavaScript(PICK_JS, self._on_pick_installed)
+        except (RuntimeError, AttributeError) as exc:
+            self._pick_active = False
+            self._set_pick_button(False)
+            self.inputHint.setText("Enter to send · Shift+Enter for a new line")
+            self._on_agent_error(f"Could not start element picking: {exc}")
+
+    def _on_pick_installed(self, result) -> None:
+        if not self._pick_active:
+            return
+        if result is not True:
+            self._cancel_element_pick(silent=True)
+            self._set_status_message("Could not start the element picker.")
+            return
+        timer = QTimer(self)
+        timer.setInterval(120)
+        timer.timeout.connect(self._poll_element_pick)
+        self._pick_timer = timer
+        timer.start()
+
+    def _poll_element_pick(self) -> None:
+        if not self._pick_active:
+            return
+        if time.monotonic() - self._pick_started > 120:
+            self._cancel_element_pick(silent=True)
+            self._set_status_message("Element picking timed out.")
+            return
+        try:
+            self.webview.page().runJavaScript(PICK_POLL_JS, self._on_element_pick)
+        except (RuntimeError, AttributeError):
+            self._cancel_element_pick(silent=True)
+
+    def _on_element_pick(self, result) -> None:
+        if not self._pick_active or not isinstance(result, dict):
+            return
+        if result.get("cancelled"):
+            self._finish_element_pick(None, "Element pick cancelled.")
+            return
+        self._finish_element_pick(
+            result, "Element reference added to the message."
+        )
+
+    def _finish_element_pick(self, reference: dict | None, message: str) -> None:
+        if self._pick_timer is not None:
+            self._pick_timer.stop()
+            self._pick_timer.deleteLater()
+            self._pick_timer = None
+        self._pick_active = False
+        self._set_pick_button(False)
+        self.inputHint.setText("Enter to send · Shift+Enter for a new line")
+        self._set_activity("Working…" if self.agent and self.agent.busy else "Ready")
+        try:
+            self.webview.page().runJavaScript(PICK_CANCEL_JS, lambda _: None)
+        except (RuntimeError, AttributeError):
+            pass
+        if reference:
+            self._append_page_reference(reference)
+        self._set_status_message(message)
+
+    def _cancel_element_pick(self, silent: bool = False) -> None:
+        if not self._pick_active and self._pick_timer is None:
+            return
+        if self._pick_timer is not None:
+            self._pick_timer.stop()
+            self._pick_timer.deleteLater()
+            self._pick_timer = None
+        self._pick_active = False
+        self._set_pick_button(False)
+        self.inputHint.setText("Enter to send · Shift+Enter for a new line")
+        self._set_activity("Working…" if self.agent and self.agent.busy else "Ready")
+        try:
+            if self.project:
+                self.webview.page().runJavaScript(PICK_CANCEL_JS, lambda _: None)
+        except (RuntimeError, AttributeError):
+            pass
+        if not silent:
+            self._set_status_message("Element pick cancelled.")
+
+    def _append_page_reference(self, reference: dict) -> None:
+        block = _format_page_reference(reference)
+        if not block:
+            return
+        existing = self.inputEdit.toPlainText()
+        prefix = "\n\n" if existing.strip() else ""
+        cursor = self.inputEdit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(prefix + block + "\n")
+        self.inputEdit.setTextCursor(cursor)
+        self.inputEdit.ensureCursorVisible()
+        self.inputEdit.setFocus()
 
     def _navigate_address(self) -> None:
         text = self.addressEdit.text().strip()
@@ -1852,6 +2296,7 @@ class MainWindow(QMainWindow):
             self._reload_fallback.stop()
             self._reload_fallback.deleteLater()
             self._reload_fallback = None
+        self._cancel_element_pick(silent=True)
         if self._pending_load is not None:
             timer = self._pending_load.get("timer")
             if timer:

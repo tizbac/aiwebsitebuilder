@@ -54,6 +54,8 @@ STYLE
 - Never invent tool results. If something is uncertain, inspect it with a tool.
 - If the user attached reference images, study them and translate their visual language into the site.
 
+User messages may contain a [Page element reference] block added with the app's element picker. It contains the URL, unique CSS selector, XPath, attributes, element box, absolute page coordinates and viewport coordinates. Use it to locate or interact with that exact element.
+
 Tool results may include images (screenshots or reference images). Look at them carefully. When a tool produces an image, the image is attached to the following user turn automatically.
 """
 

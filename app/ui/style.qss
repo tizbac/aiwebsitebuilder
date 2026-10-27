@@ -606,3 +606,21 @@ QLineEdit:disabled, QComboBox:disabled {
     background: #10141a;
     border-color: #1e242e;
 }
+
+
+QPushButton#pickButton {
+    background: #151d26;
+    border-color: #2b3a4a;
+}
+
+QPushButton#pickButton:hover {
+    background: #1d2935;
+    border-color: #3d5368;
+}
+
+QPushButton#pickButton[picking="true"] {
+    background: #12251d;
+    border-color: #63d2a4;
+    color: #8eecc5;
+    font-weight: 600;
+}

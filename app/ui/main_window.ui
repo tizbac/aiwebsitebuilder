@@ -256,6 +256,16 @@
               <number>8</number>
              </property>
              <item>
+              <widget class="QPushButton" name="pickButton">
+               <property name="toolTip">
+                <string>Click an element in the preview to attach a precise page reference (selector, attributes, absolute and viewport coordinates)</string>
+               </property>
+               <property name="text">
+                <string>Pick element</string>
+               </property>
+              </widget>
+             </item>
+             <item>
               <widget class="QPushButton" name="attachButton">
                <property name="toolTip">
                 <string>Attach reference images (or paste / drag images into the window)</string>
