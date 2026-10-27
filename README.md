@@ -116,6 +116,7 @@ When an existing directory is chosen, the actual public root path is stored in `
 | `screenslice` | Full-width vertical slice around a CSS selector, element ± padding (default 300 px). |
 | `webview_load` | Load a URL or project path, return JS console errors/warnings, page title and screenshots. |
 | `click` | Click the first element matching a CSS selector; returns the resulting URL and new JS errors. |
+| `clickpoint` | Click at explicit viewport coordinates (CSS pixels) for canvases, maps and custom widgets. |
 | `fill` | Fill an input/textarea/select/contenteditable by selector and dispatch `input`/`change`; optionally submit the form. |
 | `run_js` | Execute JavaScript in the live preview and return the value plus console output/errors. |
 | `ask_user` | Ask the user a question with optional choices and a free-form answer; pauses the agent until answered. |

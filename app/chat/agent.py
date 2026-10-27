@@ -626,7 +626,7 @@ class ChatAgent(QObject):
             )
             return
 
-        if name in ("click", "fill"):
+        if name in ("click", "fill", "clickpoint"):
             if not self.browser_action_handler:
                 self._tool_completed(
                     index,

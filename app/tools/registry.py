@@ -314,6 +314,27 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "clickpoint",
+            "description": (
+                "Click at specific coordinates in the live preview viewport (CSS pixels, "
+                "relative to the top-left of the web content). Useful for canvases, maps, "
+                "custom widgets and unlabelled elements. The coordinate is hit-tested in the "
+                "page; the clicked element's URL, text and new console errors are returned. "
+                "Use run_js with getBoundingClientRect() to obtain coordinates."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "number", "description": "Horizontal viewport coordinate in CSS pixels."},
+                    "y": {"type": "number", "description": "Vertical viewport coordinate in CSS pixels."},
+                },
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "fill",
             "description": (
                 "Fill an input, textarea, select or contenteditable element in the live "
@@ -469,6 +490,9 @@ class ToolRegistry:
             ),
             "fill": lambda: files.fail(
                 "fill must be driven by the application UI, not this worker."
+            ),
+            "clickpoint": lambda: files.fail(
+                "clickpoint must be driven by the application UI, not this worker."
             ),
             "run_js": lambda: files.fail(
                 "run_js must be driven by the application UI, not this worker."

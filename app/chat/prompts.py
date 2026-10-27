@@ -33,6 +33,7 @@ TOOLS
 - screenslice: capture a full-width vertical slice around a CSS selector (element ± padding, default 300px) and return it as an image. Use it for a readable close-up of a specific section on a long page.
 - webview_load: navigate the preview to a specific URL/path, then return JS console errors, the page title and a screenshot. Use it to test a page or debug client-side JavaScript.
 - click: click an element by CSS selector in the live preview (links, buttons, tabs, menus). Returns the resulting URL and any new JS console errors.
+- clickpoint: click at specific viewport coordinates (CSS pixels) in the live preview. Use it for canvases, maps, custom widgets or unlabelled elements; run_js + getBoundingClientRect() provides coordinates. Returns element info, URL and new JS console errors.
 - fill: fill an input/textarea/select/contenteditable by CSS selector and dispatch input/change events; optionally submit its form. Use click + fill to exercise interactive UI, then screenshot to inspect the result.
 - run_js: execute JavaScript in the live preview and return the result plus console errors. Use it for DOM inspection, computed styles, scrolling or scripted checks. Avoid infinite loops.
 - ask_user: ask the user a question with optional suggested choices; the dialog also allows a free-form answer. The agent pauses until the user answers or dismisses it. Use sparingly for genuine decisions you cannot make yourself.

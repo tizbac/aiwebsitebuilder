@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import time
 import uuid
@@ -140,6 +141,73 @@ CLICK_JS = """
 })()
 """
 
+
+CLICKPOINT_JS = """
+(function () {
+  var x = __X__;
+  var y = __Y__;
+  var vw = window.innerWidth;
+  var vh = window.innerHeight;
+  if (!isFinite(x) || !isFinite(y) || x < 0 || y < 0 || x >= vw || y >= vh) {
+    return {
+      ok: false,
+      error: "Coordinates (" + x + ", " + y + ") are outside the " +
+        vw + "x" + vh + " viewport."
+    };
+  }
+  var el = document.elementFromPoint(x, y);
+  if (!el) {
+    return {ok: false, error: "No element at (" + x + ", " + y + ")."};
+  }
+  var selectorLike = 'a,button,input,select,textarea,label,summary,' +
+    '[role="button"],[onclick],[contenteditable="true"]';
+  var clickable = (el.closest && el.closest(selectorLike)) || el;
+  var before = location.href;
+  function opts(down) {
+    return {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, screenX: x, screenY: y,
+      button: 0, buttons: down ? 1 : 0,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true
+    };
+  }
+  function send(target, type, down) {
+    var init = opts(down);
+    var ev;
+    try { ev = new PointerEvent(type, init); }
+    catch (e) { ev = new MouseEvent(type, init); }
+    target.dispatchEvent(ev);
+  }
+  try {
+    clickable.dispatchEvent(new MouseEvent('mousemove', opts(false)));
+    send(clickable, 'pointerdown', true);
+    clickable.dispatchEvent(new MouseEvent('mousedown', opts(true)));
+    send(clickable, 'pointerup', false);
+    clickable.dispatchEvent(new MouseEvent('mouseup', opts(false)));
+    try { clickable.focus({preventScroll: true}); } catch (e) {}
+    if (clickable.matches(selectorLike)) {
+      clickable.click();
+    } else {
+      clickable.dispatchEvent(new MouseEvent('click', opts(false)));
+    }
+    return {
+      ok: true,
+      tag: clickable.tagName ? clickable.tagName.toLowerCase() : 'unknown',
+      target_tag: el.tagName ? el.tagName.toLowerCase() : 'unknown',
+      element: (clickable.innerText || clickable.value ||
+        clickable.getAttribute('aria-label') || '').trim().slice(0, 400),
+      count: 1,
+      at: {x: x, y: y},
+      viewport: {w: vw, h: vh},
+      url: location.href,
+      title: document.title,
+      navigation: location.href !== before
+    };
+  } catch (e) {
+    return {ok: false, error: String(e)};
+  }
+})()
+"""
 
 FILL_JS = """
 (function () {
@@ -1339,14 +1407,34 @@ class MainWindow(QMainWindow):
         if not self.project:
             callback({"ok": False, "error": "No project is open."})
             return
-        selector = str(args.get("selector") or "").strip()
-        if not selector:
-            callback({"ok": False, "error": "A CSS selector is required."})
-            return
-        try:
-            index = max(0, int(args.get("index") or 0))
-        except (TypeError, ValueError):
-            index = 0
+        is_point = action == "clickpoint"
+        selector = ""
+        index = 0
+        point_x = 0.0
+        point_y = 0.0
+        if is_point:
+            try:
+                point_x = float(args.get("x"))
+                point_y = float(args.get("y"))
+            except (TypeError, ValueError):
+                callback(
+                    {"ok": False, "error": "clickpoint requires numeric x and y coordinates."}
+                )
+                return
+            if not (math.isfinite(point_x) and math.isfinite(point_y)):
+                callback(
+                    {"ok": False, "error": "clickpoint coordinates must be finite numbers."}
+                )
+                return
+        else:
+            selector = str(args.get("selector") or "").strip()
+            if not selector:
+                callback({"ok": False, "error": "A CSS selector is required."})
+                return
+            try:
+                index = max(0, int(args.get("index") or 0))
+            except (TypeError, ValueError):
+                index = 0
         started = time.time()
         state = {"done": False}
         timer = QTimer(self)
@@ -1381,7 +1469,22 @@ class MainWindow(QMainWindow):
                 tag = payload.get("tag") or "element"
                 count = int(payload.get("count") or 1)
                 lines = []
-                if action == "click":
+                if action == "clickpoint":
+                    at = payload.get("at") or {"x": point_x, "y": point_y}
+                    target_tag = payload.get("target_tag") or "?"
+                    lines.append(
+                        f"Clicked at ({at.get('x')}, {at.get('y')}) on <{tag}> "
+                        f"(element under the point: <{target_tag}>)."
+                    )
+                    element = str(payload.get("element") or "").strip()
+                    if element:
+                        lines.append(f"Clicked element text: {element!r}")
+                    viewport = payload.get("viewport") or {}
+                    if viewport:
+                        lines.append(
+                            f"Viewport: {viewport.get('w')}x{viewport.get('h')} CSS px."
+                        )
+                elif action == "click":
                     element = str(payload.get("element") or "").strip()
                     lines.append(f"Clicked <{tag}> matching {selector!r}.")
                     if element:
@@ -1434,7 +1537,12 @@ class MainWindow(QMainWindow):
         )
         timer.start()
         try:
-            if action == "fill":
+            if action == "clickpoint":
+                code = (
+                    CLICKPOINT_JS.replace("__X__", json.dumps(point_x))
+                    .replace("__Y__", json.dumps(point_y))
+                )
+            elif action == "fill":
                 submit_arg = args.get("submit")
                 if isinstance(submit_arg, str):
                     submit_flag = submit_arg.strip().lower() in ("1", "true", "yes", "on")
@@ -1450,7 +1558,12 @@ class MainWindow(QMainWindow):
                 code = CLICK_JS.replace("__SELECTOR__", json.dumps(selector)).replace(
                     "__INDEX__", str(index)
                 )
-            self._set_activity(f"{action.capitalize()} {selector}…")
+            if is_point:
+                self._set_activity(
+                    f"Clicking at ({point_x:g}, {point_y:g})…"
+                )
+            else:
+                self._set_activity(f"{action.capitalize()} {selector}…")
             self.webview.page().runJavaScript(code, on_js)
         except (RuntimeError, AttributeError) as exc:
             finish({"ok": False, "error": str(exc)})
