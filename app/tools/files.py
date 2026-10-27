@@ -1,10 +1,14 @@
-"""File-oriented tools with project-root sandboxing."""
+"""File-oriented tools.
+
+Reads are jailed to the project; writes, edits and deletes are jailed to web/.
+"""
 
 from __future__ import annotations
 
 import fnmatch
 import os
 import re
+import shutil
 from pathlib import Path
 
 from ..project import Project, ProjectError
@@ -24,7 +28,6 @@ SKIP_DIRS = {
     "dist",
     "build",
 }
-INTERNAL_FILES = {"chat_history.json", "project.json"}
 MAX_FILE_BYTES = 2_000_000
 
 
@@ -36,18 +39,24 @@ def fail(text: str) -> dict:
     return {"ok": False, "text": text, "images": [], "meta": {}}
 
 
-def _check_writable(project: Project, path: Path) -> None:
+def _web_path(project: Project, relative: str) -> Path:
+    """Resolve a path and require it to live inside the public web/ folder."""
+    path = project.safe_path(relative)
+    web_root = project.web_dir.resolve()
     try:
-        rel = path.relative_to(project.root)
+        path.relative_to(web_root)
     except ValueError:
-        raise ProjectError("Path is outside the project.") from None
-    parts = rel.parts
-    if parts and parts[0] == Project.STATE_DIRNAME:
-        raise ProjectError("The .aibuilder directory is managed by the app and is read-only.")
-    if len(parts) == 1 and rel.name in INTERNAL_FILES:
-        raise ProjectError(f"'{rel.name}' is managed by the app and is read-only.")
-    if path.name.endswith((".tmp",)) and len(parts) == 1:
-        raise ProjectError("Temporary app files are read-only.")
+        raise ProjectError(
+            "Write, edit and delete operations are restricted to the public web/ "
+            f"directory. '{project.rel(path)}' is outside web/."
+        ) from None
+    return path
+
+
+def _truthy(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
 
 
 def _read_text(path: Path) -> str:
@@ -90,8 +99,11 @@ def read_file(project: Project, args: dict) -> dict:
 
 def write_file(project: Project, args: dict) -> dict:
     try:
-        path = project.safe_path(args.get("path", ""))
-        _check_writable(project, path)
+        path = _web_path(project, args.get("path", ""))
+        if path == project.web_dir.resolve():
+            return fail("The web/ directory itself is not a file.")
+        if path.exists() and path.is_dir():
+            return fail(f"'{project.rel(path)}' is a directory, not a file.")
         content = str(args.get("content") or "")
         if len(content) > 4_000_000:
             return fail("Content is too large (over 4 MB).")
@@ -111,8 +123,7 @@ def write_file(project: Project, args: dict) -> dict:
 
 def edit_file(project: Project, args: dict) -> dict:
     try:
-        path = project.safe_path(args.get("path", ""))
-        _check_writable(project, path)
+        path = _web_path(project, args.get("path", ""))
         if not path.exists():
             return fail(f"File not found: {project.rel(path)}")
         old = str(args.get("old_string") or "")
@@ -137,7 +148,7 @@ def edit_file(project: Project, args: dict) -> dict:
                 "old_string was not found. Copy the exact text from read_file, including "
                 "whitespace and indentation. The line-number prefix must not be included."
             )
-        replace_all = bool(args.get("replace_all"))
+        replace_all = _truthy(args.get("replace_all"))
         if count > 1 and not replace_all:
             positions = [m.start() for m in re.finditer(re.escape(used_old), content)]
             line_numbers = [content.count("\n", 0, pos) + 1 for pos in positions[:20]]
@@ -156,6 +167,67 @@ def edit_file(project: Project, args: dict) -> dict:
             path=project.rel(path),
             replacements=count if replace_all else 1,
         )
+    except (ProjectError, OSError) as exc:
+        return fail(str(exc))
+
+
+def delete(project: Project, args: dict) -> dict:
+    """Delete a file or directory, strictly inside the public web/ directory."""
+    try:
+        path = _web_path(project, args.get("path", ""))
+        web_root = project.web_dir.resolve()
+        if path == web_root:
+            return fail("Refusing to delete the web/ document root itself.")
+        if not path.exists() and not path.is_symlink():
+            return fail(f"Path not found: {project.rel(path)}")
+        rel = project.rel(path)
+        recursive = _truthy(args.get("recursive"))
+        if path.is_file():
+            size = path.stat().st_size
+            path.unlink()
+            return ok(
+                f"Deleted file {rel} ({size} bytes).",
+                path=rel,
+                kind="file",
+                files=1,
+                bytes=size,
+            )
+        if path.is_dir():
+            if not recursive:
+                try:
+                    path.rmdir()
+                except OSError:
+                    return fail(
+                        f"Directory '{rel}' is not empty. Pass recursive=true to delete "
+                        f"it and everything inside it."
+                    )
+                return ok(
+                    f"Deleted empty directory {rel}.",
+                    path=rel,
+                    kind="directory",
+                    files=0,
+                    bytes=0,
+                )
+            file_count = 0
+            total_bytes = 0
+            for dirpath, _dirnames, filenames in os.walk(path):
+                for name in filenames:
+                    candidate = Path(dirpath) / name
+                    try:
+                        total_bytes += candidate.lstat().st_size
+                        file_count += 1
+                    except OSError:
+                        pass
+            shutil.rmtree(path)
+            return ok(
+                f"Deleted directory {rel} and its contents "
+                f"({file_count} file(s), {total_bytes} bytes).",
+                path=rel,
+                kind="directory",
+                files=file_count,
+                bytes=total_bytes,
+            )
+        return fail(f"'{rel}' is neither a file nor a directory.")
     except (ProjectError, OSError) as exc:
         return fail(str(exc))
 

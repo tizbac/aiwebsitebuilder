@@ -32,6 +32,7 @@ The agent can read and edit files, search the project, drive the preview in a re
 - **Chat history per project** — `chat_history.json` stores user, assistant, reasoning, tool calls, tool results, images and compaction markers.
 - **Automatic context compaction** — when the estimated context reaches the configured percentage, older messages are summarised into a handoff summary and kept in the history file. The UI shows a compaction marker that expands to the summary.
 - **Local and private** — only your configured API endpoint, DuckDuckGo (for web search) and any URLs you load in the preview receive traffic. Settings live in `~/.config/AIWebSiteBuilder/settings.json`; the API key is stored there in plain text.
+- **Write jail** — `write_file`, `edit_file` and `delete` are restricted to the project's `web/` directory. The rest of the project is read-only to the agent.
 
 ## Requirements
 
@@ -93,7 +94,7 @@ my-site/
 └── .gitignore
 ```
 
-The PHP server runs from the project root with `-t web`, so only `web/` is public. The agent is sandboxed to the project root; paths outside it are rejected.
+The PHP server runs from the project root with `-t web`, so only `web/` is public. File reads are sandboxed to the project root; **all writes, edits and deletes are jailed to `web/`** — the agent cannot modify `README.md`, `chat_history.json`, app state or anything else outside the public document root.
 
 ## Tools available to the model
 
@@ -101,8 +102,9 @@ The PHP server runs from the project root with `-t web`, so only `web/` is publi
 | --- | --- |
 | `list_files` | Inspect the project tree. |
 | `read_file` | Read a UTF-8 file, optionally by line range. Output includes line numbers. |
-| `write_file` | Create a file or fully replace it. |
-| `edit_file` | Exact `old_string` → `new_string` replacement. Requires a unique match unless `replace_all` is true. |
+| `write_file` | Create a file or fully replace it, **inside `web/` only**. |
+| `edit_file` | Exact `old_string` → `new_string` replacement, **inside `web/` only**. Requires a unique match unless `replace_all` is true. |
+| `delete` | Delete a file or directory, **inside `web/` only**. Non-empty directories require `recursive=true`. |
 | `grep` | Regex content search with file paths and line numbers, optional context and glob filters. |
 | `search` | Find files/folders by substring or glob. |
 | `screenshot` | Full-page desktop and phone screenshots (both by default). Images are returned to the model. |
@@ -180,7 +182,7 @@ app/chat/
   prompts.py                 system + summarisation prompts
   tokens.py                  context estimates
 app/tools/
-  files.py                   read/write/edit/grep/search/list tools
+  files.py                   read/write/edit/delete/grep/search/list tools
   registry.py                tool schemas, dispatch, background worker
   websearch.py               DuckDuckGo requests fallback
 app/ui/

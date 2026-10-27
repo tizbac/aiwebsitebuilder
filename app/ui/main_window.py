@@ -770,7 +770,7 @@ class MainWindow(QMainWindow):
         if (
             message.get("role") == "tool"
             and not message.get("error")
-            and message.get("name") in ("write_file", "edit_file")
+            and message.get("name") in ("write_file", "edit_file", "delete")
         ):
             self._reload_preview_after_edit()
 

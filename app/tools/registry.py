@@ -56,7 +56,8 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "write_file",
             "description": (
-                "Create a new file or completely overwrite an existing one. Prefer "
+                "Create a new file or completely overwrite an existing one inside the "
+                "public web/ directory. This tool cannot write outside web/. Prefer "
                 "edit_file for small changes to existing files."
             ),
             "parameters": {
@@ -74,9 +75,10 @@ TOOL_SCHEMAS: list[dict] = [
         "function": {
             "name": "edit_file",
             "description": (
-                "Replace an exact substring in an existing file. old_string must match "
-                "exactly (including whitespace) and must be unique unless replace_all is "
-                "true. Do not include read_file line-number prefixes."
+                "Replace an exact substring in an existing file inside the public web/ "
+                "directory (no writes outside web/). old_string must match exactly, "
+                "including whitespace, and must be unique unless replace_all is true. Do "
+                "not include read_file line-number prefixes."
             ),
             "parameters": {
                 "type": "object",
@@ -90,6 +92,31 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                 },
                 "required": ["path", "old_string", "new_string"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete",
+            "description": (
+                "Delete a file or directory inside the public web/ directory. This tool "
+                "is strictly restricted to web/. Deleting a non-empty directory requires "
+                "recursive=true; the web/ root itself cannot be deleted."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory path inside web/, relative to the project root.",
+                    },
+                    "recursive": {
+                        "type": "boolean",
+                        "description": "Required for non-empty directories. Default false.",
+                    },
+                },
+                "required": ["path"],
             },
         },
     },
@@ -340,6 +367,7 @@ class ToolRegistry:
             "read_file": lambda: files.read_file(self.project, args),
             "write_file": lambda: files.write_file(self.project, args),
             "edit_file": lambda: files.edit_file(self.project, args),
+            "delete": lambda: files.delete(self.project, args),
             "grep": lambda: files.grep(self.project, args),
             "search": lambda: files.search(self.project, args),
             "web_search": lambda: web_search(self.project, args),
