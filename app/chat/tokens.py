@@ -38,7 +38,7 @@ def estimate_message(message: dict) -> int:
     return tokens
 
 
-def estimate_messages(messages: list[dict], tool_tokens: int = 1400) -> int:
+def estimate_messages(messages: list[dict], tool_tokens: int = 2400) -> int:
     return sum(estimate_message(m) for m in messages) + tool_tokens
 
 

@@ -39,20 +39,6 @@ def fail(text: str) -> dict:
     return {"ok": False, "text": text, "images": [], "meta": {}}
 
 
-def _web_path(project: Project, relative: str) -> Path:
-    """Resolve a path and require it to live inside the public web/ folder."""
-    path = project.safe_path(relative)
-    web_root = project.web_dir.resolve()
-    try:
-        path.relative_to(web_root)
-    except ValueError:
-        raise ProjectError(
-            "Write, edit and delete operations are restricted to the public web/ "
-            f"directory. '{project.rel(path)}' is outside web/."
-        ) from None
-    return path
-
-
 def _truthy(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
@@ -99,7 +85,7 @@ def read_file(project: Project, args: dict) -> dict:
 
 def write_file(project: Project, args: dict) -> dict:
     try:
-        path = _web_path(project, args.get("path", ""))
+        path = project.web_path(args.get("path", ""))
         if path == project.web_dir.resolve():
             return fail("The web/ directory itself is not a file.")
         if path.exists() and path.is_dir():
@@ -123,7 +109,7 @@ def write_file(project: Project, args: dict) -> dict:
 
 def edit_file(project: Project, args: dict) -> dict:
     try:
-        path = _web_path(project, args.get("path", ""))
+        path = project.web_path(args.get("path", ""))
         if not path.exists():
             return fail(f"File not found: {project.rel(path)}")
         old = str(args.get("old_string") or "")
@@ -174,7 +160,7 @@ def edit_file(project: Project, args: dict) -> dict:
 def delete(project: Project, args: dict) -> dict:
     """Delete a file or directory, strictly inside the public web/ directory."""
     try:
-        path = _web_path(project, args.get("path", ""))
+        path = project.web_path(args.get("path", ""))
         web_root = project.web_dir.resolve()
         if path == web_root:
             return fail("Refusing to delete the web/ document root itself.")
@@ -260,10 +246,7 @@ def _iter_files(project: Project, base: Path, include: str | None = None):
         )
         for name in sorted(filenames):
             path = Path(dirpath) / name
-            try:
-                rel = path.relative_to(project.root).as_posix()
-            except ValueError:
-                continue
+            rel = project.rel(path)
             if not _include_matches(name, rel, include):
                 continue
             try:
@@ -299,6 +282,17 @@ def grep(project: Project, args: dict) -> dict:
         files = [(base, project.rel(base))]
     else:
         files = list(_iter_files(project, base, include))
+        if base == project.root and not project.web_is_default and project.web_dir.is_dir():
+            files += list(_iter_files(project, project.web_dir, include))
+        seen: set[Path] = set()
+        unique: list[tuple[Path, str]] = []
+        for entry in files:
+            key = entry[0].resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(entry)
+        files = unique
 
     matches: list[str] = []
     total = 0
@@ -359,20 +353,29 @@ def search(project: Project, args: dict) -> dict:
     if base.is_file():
         return ok(f"file: {project.rel(base)}", results=1)
 
-    for dirpath, dirnames, filenames in os.walk(base):
-        dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
-        for dirname in list(dirnames):
-            path = Path(dirpath) / dirname
-            rel = path.relative_to(project.root).as_posix()
-            if matches(dirname, rel) and len(results) < max_results:
-                results.append(rel + "/")
-        for name in sorted(filenames):
-            path = Path(dirpath) / name
-            rel = path.relative_to(project.root).as_posix()
-            if not _include_matches(name, rel, include):
-                continue
-            if matches(name, rel) and len(results) < max_results:
-                results.append(rel)
+    bases = [base]
+    if base == project.root and not project.web_is_default and project.web_dir.is_dir():
+        bases.append(project.web_dir)
+    seen_results: set[str] = set()
+    for search_base in bases:
+        for dirpath, dirnames, filenames in os.walk(search_base):
+            dirnames[:] = sorted(
+                d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")
+            )
+            for dirname in list(dirnames):
+                path = Path(dirpath) / dirname
+                rel = project.rel(path)
+                if matches(dirname, rel) and len(results) < max_results and rel not in seen_results:
+                    seen_results.add(rel)
+                    results.append(rel + "/")
+            for name in sorted(filenames):
+                path = Path(dirpath) / name
+                rel = project.rel(path)
+                if not _include_matches(name, rel, include):
+                    continue
+                if matches(name, rel) and len(results) < max_results and rel not in seen_results:
+                    seen_results.add(rel)
+                    results.append(rel)
     if not results:
         return ok(f"No files or folders matching {query!r}.")
     return ok(
@@ -395,13 +398,14 @@ def list_files(project: Project, args: dict) -> dict:
     root_depth = len(base.parts)
     entries: list[str] = []
     truncated = False
+    if base == project.root and not project.web_is_default:
+        entries.append(f"web/  → {project.web_dir}  (public document root)")
     for dirpath, dirnames, filenames in os.walk(base):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         current = Path(dirpath)
         level = len(current.parts) - root_depth
         if level >= depth:
             dirnames[:] = []
-        rel_dir = current.relative_to(project.root).as_posix()
         indent = "  " * level
         if current != base:
             entries.append(f"{indent}{current.name}/")

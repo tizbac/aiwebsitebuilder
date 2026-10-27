@@ -13,9 +13,10 @@ from urllib.parse import quote
 
 from PyQt6 import uic
 from PyQt6.QtCore import QEvent, QSettings, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QDesktopServices, QFontMetrics, QIcon, QKeySequence, QPixmap
+from PyQt6.QtGui import QDesktopServices, QFontMetrics, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -35,6 +36,7 @@ from ..config import Settings
 from ..php_server import PhpServer
 from ..project import Project, ProjectError
 from ..utils import human_tokens, import_attachment, save_clipboard_image
+from .ask_user_dialog import AskUserDialog
 from .chat_view import MessageList
 from .log_dialog import LogDialog
 from .new_project_dialog import NewProjectDialog
@@ -219,6 +221,73 @@ FILL_JS = """
 """
 
 
+RUN_JS_WRAPPER = """
+(function () {
+  var code = __CODE__;
+  var token = __TOKEN__;
+  function safe(v) {
+    try {
+      if (v === undefined) return "[undefined]";
+      return JSON.parse(JSON.stringify(v));
+    } catch (e) {
+      try { return String(v); } catch (e2) { return "[unserializable]"; }
+    }
+  }
+  function success(v) {
+    return {__aiwb: true, value: safe(v)};
+  }
+  function failure(e) {
+    return {
+      __aiwb: true,
+      error: String(e),
+      stack: e && e.stack ? String(e.stack).slice(0, 2500) : ""
+    };
+  }
+  try {
+    var value;
+    try {
+      value = (0, eval)(code);
+    } catch (e) {
+      if (e && e.name === "SyntaxError") {
+        value = (new Function(code))();
+      } else {
+        throw e;
+      }
+    }
+    if (value && typeof value.then === "function") {
+      window.__aiwb_js = window.__aiwb_js || {};
+      window.__aiwb_js[token] = {done: false};
+      value.then(
+        function (v) {
+          window.__aiwb_js[token] = {done: true, value: safe(v)};
+        },
+        function (e) {
+          window.__aiwb_js[token] = {
+            done: true,
+            error: String(e),
+            stack: e && e.stack ? String(e.stack).slice(0, 2500) : ""
+          };
+        }
+      );
+      return {__aiwb: true, pending: true, token: token};
+    }
+    return success(value);
+  } catch (e) {
+    return failure(e);
+  }
+})()
+"""
+
+
+def _format_js_value(value) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, settings: Settings, project_path: str | None = None) -> None:
         super().__init__()
@@ -241,6 +310,8 @@ class MainWindow(QMainWindow):
         self._app_logs: deque[str] = deque(maxlen=400)
         self._settings_open = False
         self._settings_dialog: SettingsDialog | None = None
+        self._ask_dialog: AskUserDialog | None = None
+        self._ask_dialog_open = False
         self._current_url = ""
         self._qt_settings = QSettings("AIWebSiteBuilder", "AIWebSiteBuilder")
 
@@ -259,10 +330,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ construction
     def _build_webview(self) -> None:
         self.webview = ConsoleWebView(self)
-        try:
-            self.webview.page().setBackgroundColor(QColor("#0b0e13"))
-        except AttributeError:
-            pass
         self.webview.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
@@ -421,7 +488,12 @@ class MainWindow(QMainWindow):
             return
         data = dialog.result_data
         try:
-            project = Project.create(data["location"], data["name"], data["template"])
+            project = Project.create(
+                data["location"],
+                data["name"],
+                data["template"],
+                web_dir=data.get("web_dir"),
+            )
         except (ProjectError, OSError) as exc:
             QMessageBox.critical(self, "New Project", f"Could not create the project:\n{exc}")
             return
@@ -483,6 +555,8 @@ class MainWindow(QMainWindow):
         self.agent.webview_load_handler = self._load_for_agent
         self.agent.browser_action_handler = self._browser_action_for_agent
         self.agent.search_handler = self._search_for_agent
+        self.agent.js_handler = self._js_for_agent
+        self.agent.ask_user_handler = self._ask_user_for_agent
         self.agent.message_added.connect(self._on_message_added)
         self.agent.message_delta.connect(self._on_message_delta)
         self.agent.message_updated.connect(self._on_message_updated)
@@ -569,6 +643,9 @@ class MainWindow(QMainWindow):
         if not self.project:
             return
         self.projectNameLabel.setText(self.project.name)
+        self.projectNameLabel.setToolTip(
+            f"Public web root: {self.project.web_dir}"
+        )
         self._elide_labels()
 
     def _elide_labels(self) -> None:
@@ -578,7 +655,9 @@ class MainWindow(QMainWindow):
                 full, Qt.TextElideMode.ElideMiddle, 360
             )
             self.projectPathLabel.setText(elided)
-            self.projectPathLabel.setToolTip(full)
+            self.projectPathLabel.setToolTip(
+                f"Project: {full}\nPublic web root: {self.project.web_dir}"
+            )
         if self._current_url:
             if not self.addressEdit.hasFocus():
                 self.addressEdit.setText(self._current_url)
@@ -1387,6 +1466,158 @@ class MainWindow(QMainWindow):
         self.webview.load(QUrl(url))
         self.webview.setFocus()
 
+    def _js_for_agent(self, code: str, callback) -> None:
+        if not self.project:
+            callback({"ok": False, "error": "No project is open."})
+            return
+        started = time.time()
+        token = uuid.uuid4().hex
+        state = {"done": False, "poll": None}
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(9000)
+
+        def finish(result, timed_out: bool = False) -> None:
+            if state["done"]:
+                return
+            state["done"] = True
+            timer.stop()
+            timer.deleteLater()
+            poll = state.get("poll")
+            if poll is not None:
+                poll.stop()
+                poll.deleteLater()
+                state["poll"] = None
+            console = self.webview.console_since(started, errors_only=False, limit=50)
+            current_url = self.webview.url().toString() or self._current_url
+            title = self.webview.title()
+            lines: list[str] = []
+            ok = True
+            if timed_out:
+                ok = False
+                lines.append(
+                    "JavaScript did not return within 9 seconds. It may still be running "
+                    "in the page, or the page navigated during execution."
+                )
+            if isinstance(result, dict) and result.get("__aiwb"):
+                if result.get("error"):
+                    ok = False
+                    lines.append("JavaScript error: " + str(result.get("error")))
+                    if result.get("stack"):
+                        lines.append("Stack:\n" + str(result.get("stack")))
+                else:
+                    lines.append(
+                        "JavaScript result:\n" + _format_js_value(result.get("value"))
+                    )
+            elif result is None:
+                if not timed_out:
+                    lines.append("JavaScript returned no value.")
+            else:
+                lines.append("JavaScript result:\n" + _format_js_value(result))
+            if console:
+                lines.append("Console output since execution:\n" + console)
+            else:
+                lines.append("No console output.")
+            lines.append(f"Page: {title or '(untitled)'} — {current_url}")
+            text = "\n".join(lines)
+            if len(text) > 14_000:
+                text = text[:14_000] + "\n…[truncated]"
+            self._set_activity("Working…" if self.agent and self.agent.busy else "Ready")
+            callback({"ok": ok, "text": text, "url": current_url})
+
+        timer.timeout.connect(lambda: finish(None, True))
+        timer.start()
+        self._set_activity("Running JavaScript…")
+        script = (
+            RUN_JS_WRAPPER.replace("__CODE__", json.dumps(code))
+            .replace("__TOKEN__", json.dumps(token))
+        )
+
+        def poll_pending() -> None:
+            if state["done"] or not state.get("poll"):
+                return
+            token_js = json.dumps(token)
+            probe = (
+                "(() => { const m = window.__aiwb_js && window.__aiwb_js["
+                + token_js
+                + "]; if (!m || !m.done) return {done:false}; "
+                "delete window.__aiwb_js[" + token_js + "]; return m; })()"
+            )
+            try:
+                self.webview.page().runJavaScript(probe, on_poll)
+            except (RuntimeError, AttributeError):
+                finish(None, True)
+
+        def on_poll(result) -> None:
+            if state["done"]:
+                return
+            if isinstance(result, dict) and result.get("done"):
+                normalized = {
+                    "__aiwb": True,
+                    "value": result.get("value"),
+                    "error": result.get("error"),
+                    "stack": result.get("stack"),
+                }
+                if normalized.get("error"):
+                    normalized["stack"] = result.get("stack", "")
+                finish(normalized, False)
+
+        def start_polling() -> None:
+            poll = QTimer(self)
+            poll.setInterval(120)
+            poll.timeout.connect(poll_pending)
+            state["poll"] = poll
+            poll.start()
+            QTimer.singleShot(120, poll_pending)
+
+        def on_result(result) -> None:
+            if isinstance(result, dict) and result.get("pending"):
+                start_polling()
+                return
+            finish(result, False)
+
+        try:
+            self.webview.page().runJavaScript(script, on_result)
+        except (RuntimeError, AttributeError) as exc:
+            finish({"__aiwb": True, "error": str(exc)}, False)
+
+    def _ask_user_for_agent(self, question: str, choices: list[str], callback) -> None:
+        if self._ask_dialog_open:
+            callback(
+                {
+                    "ok": False,
+                    "error": "Another question is already waiting for an answer.",
+                }
+            )
+            return
+        self._ask_dialog_open = True
+        self._set_activity("Waiting for your answer…")
+        dialog = AskUserDialog(question, choices, self)
+        self._ask_dialog = dialog
+        try:
+            result = dialog.exec()
+        finally:
+            self._ask_dialog = None
+            self._ask_dialog_open = False
+        self._set_activity("Working…" if self.agent and self.agent.busy else "Ready")
+        if result == QDialog.DialogCode.Accepted and dialog.answer is not None:
+            callback(
+                {
+                    "ok": True,
+                    "answer": dialog.answer,
+                    "source": dialog.answer_source,
+                    "question": question,
+                }
+            )
+        else:
+            callback(
+                {
+                    "ok": False,
+                    "error": "The user dismissed the question without answering.",
+                    "question": question,
+                }
+            )
+
     def _search_for_agent(self, query: str, max_results: int, callback) -> None:
         if not query:
             callback({"ok": False, "error": "A search query is required."})
@@ -1526,6 +1757,8 @@ class MainWindow(QMainWindow):
                 agent.force_stop_workers()
         self.search_engine.close()
         self.server.stop(emit=False)
+        if self._ask_dialog is not None:
+            self._ask_dialog.close()
         if self.log_dialog is not None:
             self.log_dialog.close()
         if self._settings_dialog is not None:

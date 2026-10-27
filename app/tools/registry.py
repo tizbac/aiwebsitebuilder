@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from . import files
+from .git_tools import git_commit
 from .websearch import web_search
 
 
@@ -22,7 +23,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Directory relative to the project root. Defaults to '.'.",
+                        "description": "Directory relative to the project root. Use 'web' for the public root. Defaults to '.'.",
                     },
                     "depth": {
                         "type": "integer",
@@ -43,7 +44,7 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the project root."},
+                    "path": {"type": "string", "description": "File path relative to the project root, or web/... for public files."},
                     "start_line": {"type": "integer", "description": "First line (1-based)."},
                     "end_line": {"type": "integer", "description": "Last line (inclusive)."},
                 },
@@ -63,7 +64,7 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the project root."},
+                    "path": {"type": "string", "description": "File path inside web/; relative to the public root or prefixed with web/."},
                     "content": {"type": "string", "description": "Complete UTF-8 file content."},
                 },
                 "required": ["path", "content"],
@@ -83,7 +84,7 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the project root."},
+                    "path": {"type": "string", "description": "File path inside web/; relative to the public root or prefixed with web/."},
                     "old_string": {"type": "string", "description": "Exact text to replace."},
                     "new_string": {"type": "string", "description": "Replacement text."},
                     "replace_all": {
@@ -109,7 +110,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File or directory path inside web/, relative to the project root.",
+                        "description": "File or directory path inside web/; relative to the public root or prefixed with web/.",
                     },
                     "recursive": {
                         "type": "boolean",
@@ -117,6 +118,36 @@ TOOL_SCHEMAS: list[dict] = [
                     },
                 },
                 "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": (
+                "Stage and commit specific files from the public web/ directory in the "
+                "git repository that contains them. Pass the exact files (or directories) "
+                "to include and a clear commit message. Files outside web/ or files that "
+                "span multiple repositories are rejected."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Files or directories inside web/ to stage and commit, e.g. "
+                            "['web/index.php', 'web/assets/style.css']."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Commit message describing the change.",
+                    },
+                },
+                "required": ["files", "message"],
             },
         },
     },
@@ -132,7 +163,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Regular expression to search for."},
-                    "path": {"type": "string", "description": "File or directory to search. Default '.'."},
+                    "path": {"type": "string", "description": "File or directory relative to the project root. Use 'web' for the public root. Default '.'."},
                     "include": {
                         "type": "string",
                         "description": "Optional glob filter, e.g. '*.php' or '*.{css,js}'.",
@@ -158,7 +189,7 @@ TOOL_SCHEMAS: list[dict] = [
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "Name, substring or glob pattern."},
-                    "path": {"type": "string", "description": "Directory to search. Default '.'."},
+                    "path": {"type": "string", "description": "Directory relative to the project root. Use 'web' for the public root. Default '.'."},
                     "include": {"type": "string", "description": "Optional file glob filter."},
                     "max_results": {"type": "integer", "description": "Maximum results (default 200)."},
                 },
@@ -317,6 +348,57 @@ TOOL_SCHEMAS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "run_js",
+            "description": (
+                "Execute JavaScript in the live preview page and return the evaluated "
+                "value plus console output/errors. The code is evaluated like the browser "
+                "console; a final expression returns its value, and function-body code with "
+                "'return' also works. Returned promises are awaited. "
+                "Avoid infinite loops. Use it to inspect DOM state, computed styles, scroll "
+                "positions or to script the page."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "JavaScript to execute in the preview page.",
+                    },
+                },
+                "required": ["code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_user",
+            "description": (
+                "Ask the user a question and pause the agent until they answer. Provide "
+                "optional suggested choices; the dialog always allows a free-form answer. "
+                "Use this sparingly when a design decision or missing detail genuinely "
+                "requires the user, never for information you can discover yourself."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question to show the user.",
+                    },
+                    "choices": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional suggested answers (up to 8).",
+                    },
+                },
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "server_log",
             "description": (
                 "Read the PHP development server log. Contains HTTP requests, PHP warnings "
@@ -368,6 +450,7 @@ class ToolRegistry:
             "write_file": lambda: files.write_file(self.project, args),
             "edit_file": lambda: files.edit_file(self.project, args),
             "delete": lambda: files.delete(self.project, args),
+            "git_commit": lambda: git_commit(self.project, args),
             "grep": lambda: files.grep(self.project, args),
             "search": lambda: files.search(self.project, args),
             "web_search": lambda: web_search(self.project, args),
@@ -386,6 +469,12 @@ class ToolRegistry:
             ),
             "fill": lambda: files.fail(
                 "fill must be driven by the application UI, not this worker."
+            ),
+            "run_js": lambda: files.fail(
+                "run_js must be driven by the application UI, not this worker."
+            ),
+            "ask_user": lambda: files.fail(
+                "ask_user must be driven by the application UI, not this worker."
             ),
         }
         try:

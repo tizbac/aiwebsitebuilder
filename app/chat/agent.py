@@ -45,6 +45,8 @@ class ChatAgent(QObject):
         self.webview_load_handler = None  # callable(target, modes, callback)
         self.browser_action_handler = None  # callable(action, args, callback)
         self.search_handler = None  # callable(query, max_results, callback)
+        self.js_handler = None  # callable(code, callback)
+        self.ask_user_handler = None  # callable(question, choices, callback)
 
         self._busy = False
         self._stop_requested = False
@@ -89,7 +91,7 @@ class ChatAgent(QObject):
 
     def _estimate_used(self) -> int:
         start, marker = self.history.last_compaction()
-        tokens = estimate_text(self._system_prompt()) + 1400
+        tokens = estimate_text(self._system_prompt()) + 2400
         if marker:
             tokens += estimate_text(str(marker.get("summary") or ""))
         for message in self.history.messages[start:]:
@@ -561,6 +563,54 @@ class ChatAgent(QObject):
             )
             return
 
+        if name == "run_js":
+            code = str(args.get("code") or "")
+            if not code.strip():
+                self._tool_completed(
+                    index, call, {"ok": False, "text": "run_js requires non-empty code.", "images": []}
+                )
+                return
+            if not self.js_handler:
+                self._tool_completed(
+                    index, call, {"ok": False, "text": "run_js is not available.", "images": []}
+                )
+                return
+            self.js_handler(
+                code,
+                lambda payload: self._tool_completed(
+                    index, call, self._js_result(payload)
+                ),
+            )
+            return
+
+        if name == "ask_user":
+            question = str(args.get("question") or "").strip()
+            if not question:
+                self._tool_completed(
+                    index, call, {"ok": False, "text": "ask_user requires a question.", "images": []}
+                )
+                return
+            if not self.ask_user_handler:
+                self._tool_completed(
+                    index, call, {"ok": False, "text": "ask_user is not available.", "images": []}
+                )
+                return
+            raw_choices = args.get("choices")
+            choices: list[str] = []
+            if isinstance(raw_choices, str):
+                choices = [raw_choices.strip()] if raw_choices.strip() else []
+            elif isinstance(raw_choices, list):
+                choices = [str(choice).strip() for choice in raw_choices if str(choice).strip()]
+            choices = choices[:8]
+            self.ask_user_handler(
+                question,
+                choices,
+                lambda payload: self._tool_completed(
+                    index, call, self._ask_result(payload, question)
+                ),
+            )
+            return
+
         if name == "web_search" and self.search_handler:
             query = str(args.get("query") or "").strip()
             try:
@@ -803,6 +853,44 @@ class ChatAgent(QObject):
                 "Screenshot(s) of the page you just opened. Check console errors above and "
                 "the rendered output; fix problems and reload if needed."
             ),
+        }
+
+    def _js_result(self, payload: dict) -> dict:
+        payload = payload or {}
+        if payload.get("error") and not payload.get("text"):
+            return {
+                "ok": False,
+                "text": "JavaScript failed: " + str(payload.get("error")),
+                "images": [],
+            }
+        return {
+            "ok": bool(payload.get("ok", True)),
+            "text": str(payload.get("text") or "JavaScript returned no value."),
+            "images": [],
+        }
+
+    def _ask_result(self, payload: dict, question: str) -> dict:
+        payload = payload or {}
+        if not payload.get("ok") or payload.get("answer") is None:
+            return {
+                "ok": False,
+                "text": "The user did not answer: "
+                + str(payload.get("error") or "the question was dismissed."),
+                "images": [],
+            }
+        answer = str(payload.get("answer") or "").strip()
+        if not answer:
+            return {
+                "ok": False,
+                "text": "The user did not provide an answer.",
+                "images": [],
+            }
+        source = str(payload.get("source") or "")
+        suffix = " (selected suggestion)" if source == "choice" else ""
+        return {
+            "ok": True,
+            "text": f"The user answered your question.\nQuestion: {question}\nAnswer: {answer}{suffix}",
+            "images": [],
         }
 
     def _search_result(self, payload: dict) -> dict:

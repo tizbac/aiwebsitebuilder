@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>560</width>
-    <height>340</height>
+    <width>600</width>
+    <height>500</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -42,10 +42,17 @@
    <item>
     <widget class="QLabel" name="introLabel">
      <property name="text">
-      <string>A project folder is created with a public web/ document root. A PHP development server is started on a random local port and the preview opens automatically.</string>
+      <string>A project folder is created for the chat and preview metadata. By default it gets a new web/ document root; you can instead serve an existing public directory. A PHP development server starts on a random local port.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QCheckBox" name="useExistingWeb">
+     <property name="text">
+      <string>Use an existing public web directory (outside this project folder)</string>
      </property>
     </widget>
    </item>
@@ -125,7 +132,45 @@
        </item>
       </widget>
      </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="webDirLabel">
+       <property name="text">
+        <string>Public web dir</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <layout class="QHBoxLayout" name="webDirRow">
+       <property name="spacing">
+        <number>8</number>
+       </property>
+       <item>
+        <widget class="QLineEdit" name="webDir">
+         <property name="placeholderText">
+          <string>/var/www/my-site</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="browseWebButton">
+         <property name="text">
+          <string>Browse…</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </item>
     </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="existingWebHint">
+     <property name="text">
+      <string>When enabled, the chosen directory is used as the public document root and its existing content is left untouched (the template is ignored).</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
    </item>
    <item>
     <widget class="QLabel" name="pathPreviewLabel">

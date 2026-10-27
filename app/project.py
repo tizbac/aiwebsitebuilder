@@ -23,31 +23,62 @@ class ProjectError(Exception):
 
 def _slugify(value: str) -> str:
     value = re.sub(r"[^\w\-. ]+", "", value, flags=re.UNICODE).strip()
-    value = re.sub(r"\s+", "-", value)
-    return value or "website"
+    value = re.sub(r"\s+", "-", value).strip(".")
+    if not value or set(value) <= {"."}:
+        return "website"
+    return value
 
 
 class Project:
-    """A project directory with a public ``web/`` document root."""
+    """A project whose public document root may be ``web/`` or an existing external directory."""
 
     STATE_DIRNAME = ".aibuilder"
 
-    def __init__(self, root: str | Path, *, create: bool = False) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        create: bool = False,
+        web_dir: str | Path | None = None,
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
-        self.web_dir = self.root / "web"
         self.state_dir = self.root / self.STATE_DIRNAME
         self.attachments_dir = self.state_dir / "attachments"
         self.screenshots_dir = self.state_dir / "screenshots"
         self.history_path = self.root / "chat_history.json"
         self.meta_path = self.root / "project.json"
+
+        self.meta: dict = {}
+        if self.meta_path.exists():
+            try:
+                self.meta = json.loads(self.meta_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                self.meta = {}
+
+        raw_web = web_dir if web_dir is not None else self.meta.get("web_dir")
+        if raw_web:
+            candidate = Path(str(raw_web)).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.root / candidate
+            self.web_dir = candidate.resolve()
+            self.web_dir_is_custom = True
+        else:
+            self.web_dir = self.root / "web"
+            self.web_dir_is_custom = False
+
         if not create and not self.root.is_dir():
             raise ProjectError(f"Project directory does not exist: {self.root}")
-        if not create and not self.web_dir.is_dir():
+        if self.web_dir_is_custom:
+            if not self.web_dir.is_dir():
+                raise ProjectError(
+                    f"Public web directory does not exist: {self.web_dir}"
+                )
+        elif not create and not self.web_dir.is_dir():
             raise ProjectError(
                 f"{self.root} has no 'web' directory. Choose a project created by "
-                f"{APP_NAME} or create the web/ folder first."
+                f"{APP_NAME} or pick an existing public web directory."
             )
-        self.meta: dict = {}
+        self._validate_web_dir()
         self.server_url: str = ""
         self.server_port: int = 0
 
@@ -55,6 +86,10 @@ class Project:
     @property
     def name(self) -> str:
         return self.meta.get("name") or self.root.name
+
+    @property
+    def web_is_default(self) -> bool:
+        return self.web_dir.resolve() == (self.root / "web").resolve()
 
     def load_meta(self) -> None:
         try:
@@ -70,55 +105,138 @@ class Project:
         )
 
     def ensure_dirs(self) -> None:
-        self.web_dir.mkdir(parents=True, exist_ok=True)
+        if not self.web_dir_is_custom:
+            self.web_dir.mkdir(parents=True, exist_ok=True)
         self.attachments_dir.mkdir(parents=True, exist_ok=True)
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    def rel(self, path: str | Path) -> str:
-        path = Path(path)
+    def _within(self, path: Path, base: Path) -> bool:
         try:
-            return str(path.resolve().relative_to(self.root))
+            path.relative_to(base)
+            return True
         except ValueError:
-            return str(path)
+            return False
+
+    def _validate_web_dir(self) -> None:
+        web = self.web_dir.resolve()
+        root = self.root.resolve()
+        if web == root:
+            raise ProjectError("The public web directory cannot be the project root.")
+        if self._within(root, web):
+            raise ProjectError(
+                "The public web directory cannot be a parent of the project folder."
+            )
+        if self._within(self.state_dir.resolve(), web):
+            raise ProjectError(
+                "The public web directory cannot contain the .aibuilder state folder."
+            )
+        if self.web_dir_is_custom and not self.web_is_default and self._within(web, root):
+            raise ProjectError(
+                "A custom public web directory must be outside the project folder "
+                "(or use the default web/ directory)."
+            )
+
+    def rel(self, path: str | Path) -> str:
+        """Display path using the logical web/ alias for the public root."""
+        candidate = Path(path)
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        web = self.web_dir.resolve()
+        root = self.root.resolve()
+        if self._within(resolved, web):
+            rel = resolved.relative_to(web)
+            return "web" if str(rel) == "." else "web/" + rel.as_posix()
+        if self._within(resolved, root):
+            rel = resolved.relative_to(root)
+            return "." if str(rel) == "." else rel.as_posix()
+        return str(path)
 
     def safe_path(self, relative: str) -> Path:
-        """Resolve a tool supplied path, rejecting escapes from the project."""
+        """Resolve a read path. Reads may access the project and public web root."""
         raw = str(relative or "").strip()
         if not raw:
             raise ProjectError("Path must not be empty.")
         candidate = Path(raw)
+        root = self.root.resolve()
+        web = self.web_dir.resolve()
         if candidate.is_absolute():
             resolved = candidate.resolve()
         else:
-            resolved = (self.root / candidate).resolve()
-        try:
-            resolved.relative_to(self.root)
-        except ValueError:
+            parts = candidate.parts
+            if parts and parts[0] == "web":
+                inner = Path(*parts[1:]) if len(parts) > 1 else Path(".")
+                resolved = (web / inner).resolve()
+            else:
+                resolved = (root / candidate).resolve()
+        if self._within(resolved, root) or self._within(resolved, web):
+            return resolved
+        raise ProjectError(
+            f"Path '{relative}' is outside the project and its public web directory."
+        )
+
+    def web_path(self, relative: str) -> Path:
+        """Resolve a write/edit/delete path and require it to be inside web/."""
+        raw = str(relative or "").strip()
+        if not raw:
+            raise ProjectError("Path must not be empty.")
+        candidate = Path(raw)
+        web = self.web_dir.resolve()
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+        else:
+            parts = candidate.parts
+            if parts and parts[0] == "web":
+                inner = Path(*parts[1:]) if len(parts) > 1 else Path(".")
+            else:
+                inner = candidate
+            resolved = (web / inner).resolve()
+        if not self._within(resolved, web):
             raise ProjectError(
-                f"Path '{relative}' is outside the project root. Paths must be "
-                f"relative to the project root."
-            ) from None
+                "Write, edit and delete operations are restricted to the public web/ "
+                f"directory. '{relative}' is outside web/."
+            )
         return resolved
 
     # ------------------------------------------------------------- creation
     @classmethod
-    def create(cls, parent_dir: str | Path, name: str, template: str = "landing") -> "Project":
+    def create(
+        cls,
+        parent_dir: str | Path,
+        name: str,
+        template: str = "landing",
+        web_dir: str | Path | None = None,
+    ) -> "Project":
         clean = _slugify(name)
         root = Path(parent_dir).expanduser().resolve() / clean
         if root.exists() and any(root.iterdir()):
             raise ProjectError(f"Directory already exists and is not empty: {root}")
+        reuse_existing = web_dir is not None and str(web_dir).strip() != ""
+        chosen_web: Path | None = None
+        if reuse_existing:
+            chosen_web = Path(str(web_dir)).expanduser().resolve()
+            if not chosen_web.is_dir():
+                raise ProjectError(
+                    f"Existing public web directory not found: {chosen_web}"
+                )
         root.mkdir(parents=True, exist_ok=True)
-        project = cls(root, create=True)
+        project = cls(root, create=True, web_dir=chosen_web)
         project.ensure_dirs()
         project.meta = {
             "name": name.strip() or clean,
             "created": int(time.time()),
-            "template": template,
+            "template": None if reuse_existing else template,
             "app": APP_NAME,
             "version": 1,
         }
+        if reuse_existing:
+            project.meta["web_dir"] = str(project.web_dir)
+            project.meta["web_reused"] = True
         project.save_meta()
-        _scaffold(project, template)
+        if not reuse_existing:
+            _scaffold(project, template)
+        _write_project_extras(project, reuse_existing)
         if not project.history_path.exists():
             project.history_path.write_text(
                 json.dumps({"version": 1, "messages": []}, indent=2, ensure_ascii=False),
@@ -466,15 +584,25 @@ if ('IntersectionObserver' in window && cards.length) {
 """,
         )
 
+def _write_project_extras(project: Project, reuse_existing: bool) -> None:
+    if reuse_existing:
+        web_lines = (
+            f"- Public web directory (existing): `{project.web_dir}`\n"
+            "- Template: not used; existing public content is kept as-is.\n"
+            "- Agent path alias: `web/` maps to the public directory above."
+        )
+    else:
+        web_lines = "- Public document root: `web/`"
     readme = f"""# {project.name}
 
 Created with AI Website Builder.
 
-- Public document root: `web/`
+{web_lines}
 - Chat history: `chat_history.json`
 - Agent state (screenshots, attachments): `.aibuilder/`
 
-The app serves `web/` with PHP's built-in development server on a random local port.
+The app serves the public web directory with PHP's built-in development server
+on a random local port.
 """
     _write(project.root, "README.md", readme)
     _write(

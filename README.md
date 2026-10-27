@@ -20,19 +20,21 @@ The agent can read and edit files, search the project, drive the preview in a re
 - **Streaming** responses with a live **thinking / reasoning** panel (`reasoning_content`, `reasoning`, inline think blocks).
 - **Multimodal input** — attach, paste or drag reference images into the chat. Images are saved in the project and sent as vision content.
 - **Tool calling** — a full agent loop with multiple tools and multiple tool rounds per turn.
-- **Project per website** — every project has a public `web/` document root. A PHP development server starts on a random free port and the preview opens automatically.
+- **Project per website** — every project has a public document root, either the default `web/` folder or an **existing public directory in an arbitrary location** chosen when creating the project. A PHP development server starts on a random free port and the preview opens automatically.
 - **Live QWebEngine preview** with an editable address bar, history navigation, reload and open-in-browser.
 - **Agent-only screenshots**:
   - `screenshot` captures the **entire page** (not just the visible viewport) for desktop and for a real 390×844 phone viewport. Both modes are returned by default, so the model can check responsiveness.
   - The phone image is rendered in a hidden, off-screen browser view; the main window layout is never disturbed.
   - `screenslice` captures a readable close-up around any CSS selector (± 300 px by default).
-- **Browser tools** — load a URL/path and get JS console errors plus screenshots; click elements by selector; fill inputs/textareas/selects/contenteditable fields and optionally submit their form.
+- **Browser tools** — load a URL/path and get JS console errors plus screenshots; click elements by selector; fill inputs/textareas/selects/contenteditable fields and optionally submit their form; execute arbitrary JavaScript in the live page with `run_js`.
+- **Git commits** — stage and commit exactly the public files the agent specifies, with a commit message.
+- **Agent questions** — `ask_user` pauses the agent and shows a modal dialog with suggested choices plus a free-form answer.
 - **Server log tool** — the agent can inspect PHP request logs, warnings and fatal errors.
 - **DuckDuckGo web search** — rendered in a hidden off-screen browser (DuckDuckGo blocks plain HTTP scrapers from many networks). The window is never shown. The Instant Answer API fallback is still available to the non-GUI registry.
 - **Chat history per project** — `chat_history.json` stores user, assistant, reasoning, tool calls, tool results, images and compaction markers.
 - **Automatic context compaction** — when the estimated context reaches the configured percentage, older messages are summarised into a handoff summary and kept in the history file. The UI shows a compaction marker that expands to the summary.
 - **Local and private** — only your configured API endpoint, DuckDuckGo (for web search) and any URLs you load in the preview receive traffic. Settings live in `~/.config/AIWebSiteBuilder/settings.json`; the API key is stored there in plain text.
-- **Write jail** — `write_file`, `edit_file` and `delete` are restricted to the project's `web/` directory. The rest of the project is read-only to the agent.
+- **Write jail** — `write_file`, `edit_file`, `delete` and `git_commit` are restricted to the public web root (the default `web/` or an external directory). The rest of the project is read-only to the agent.
 
 ## Requirements
 
@@ -73,7 +75,7 @@ On first launch:
    - Context length (used for the usage meter and compaction)
    - Request timeout
    - Optional: compaction threshold, max tool rounds, image max side
-2. **File → New Project…** (`Ctrl+N`), choose a name, parent folder and starter template.
+2. **File → New Project…** (`Ctrl+N`), choose a name, parent folder and starter template. To reuse an existing site directory, enable **Use an existing public web directory**, pick the folder, and the content is served as-is without scaffolding.
 3. The app creates the folder, starts PHP, and opens the preview. Describe the site and press **Enter**.
 
 The base URL is normalised: if it already ends in `/v1`, `/chat/completions` is appended; otherwise `/v1/chat/completions` is appended.
@@ -82,8 +84,8 @@ The base URL is normalised: if it already ends in `/v1`, `/chat/completions` is 
 
 ```
 my-site/
-├── web/                     # public document root served by PHP
-│   ├── index.php
+├── web/                     # public document root served by PHP (default)
+│   ├── index.php            # or an existing directory elsewhere, chosen at creation
 │   └── assets/…
 ├── chat_history.json        # complete conversation + compaction markers
 ├── project.json             # project metadata
@@ -94,7 +96,9 @@ my-site/
 └── .gitignore
 ```
 
-The PHP server runs from the project root with `-t web`, so only `web/` is public. File reads are sandboxed to the project root; **all writes, edits and deletes are jailed to `web/`** — the agent cannot modify `README.md`, `chat_history.json`, app state or anything else outside the public document root.
+The PHP server runs with `-t <public web root>` and starts in that directory, so only the public root is served and relative PHP includes work normally. The agent sees the public root through the logical **`web/` alias**, even when it lives outside the project folder. File reads are sandboxed to the project and public root; **all writes, edits, deletes and commits are jailed to the public root** — the agent cannot modify `README.md`, `chat_history.json`, app state or anything else outside it.
+
+When an existing directory is chosen, the actual public root path is stored in `project.json`; the project folder still holds the chat history and `.aibuilder/` state.
 
 ## Tools available to the model
 
@@ -105,6 +109,7 @@ The PHP server runs from the project root with `-t web`, so only `web/` is publi
 | `write_file` | Create a file or fully replace it, **inside `web/` only**. |
 | `edit_file` | Exact `old_string` → `new_string` replacement, **inside `web/` only**. Requires a unique match unless `replace_all` is true. |
 | `delete` | Delete a file or directory, **inside `web/` only**. Non-empty directories require `recursive=true`. |
+| `git_commit` | Stage and commit **specific files** from the public web root with a message. Only the listed files are committed. |
 | `grep` | Regex content search with file paths and line numbers, optional context and glob filters. |
 | `search` | Find files/folders by substring or glob. |
 | `screenshot` | Full-page desktop and phone screenshots (both by default). Images are returned to the model. |
@@ -112,6 +117,8 @@ The PHP server runs from the project root with `-t web`, so only `web/` is publi
 | `webview_load` | Load a URL or project path, return JS console errors/warnings, page title and screenshots. |
 | `click` | Click the first element matching a CSS selector; returns the resulting URL and new JS errors. |
 | `fill` | Fill an input/textarea/select/contenteditable by selector and dispatch `input`/`change`; optionally submit the form. |
+| `run_js` | Execute JavaScript in the live preview and return the value plus console output/errors. |
+| `ask_user` | Ask the user a question with optional choices and a free-form answer; pauses the agent until answered. |
 | `server_log` | Read recent PHP server output, with an optional filter. |
 | `web_search` | Search DuckDuckGo and return titles, URLs and snippets. |
 
@@ -133,6 +140,10 @@ Every tool result is text; screenshots and reference images are attached to the 
 - Summarisation can be chunked for small context windows. If compaction fails, the error is shown and the current turn continues without blocking.
 - **Chat → Compact Context** triggers compaction manually. **Chat → Clear Chat** deletes the history file contents.
 
+## Git commits
+
+The agent can commit selected files from the public web root using `git_commit(files, message)`. It only stages and commits the listed paths, so unrelated changes are left alone. The public directory (or one of its parents) must already be a git repository, and git needs a configured `user.name` / `user.email` to create commits. Commits are restricted to the public root just like writes and deletes.
+
 ## Web search
 
 `web_search` runs `https://duckduckgo.com/?q=…&ia=web` inside a hidden `QWebEngineView` and extracts the rendered result list with JavaScript. This uses DuckDuckGo's public web results without an API key and avoids the 202 anti-bot page that plain HTTP requests often receive. The hidden browser is created with `WA_DontShowOnScreen` and is never visible. `app/tools/websearch.py` also contains a pure-`requests` implementation (HTML + Instant Answer API) used when no GUI handler is attached.
@@ -150,6 +161,8 @@ Every tool result is text; screenshots and reference images are attached to the 
 | `Enter` | Send message |
 | `Shift+Enter` | New line in the message box |
 | `Ctrl+V` | Paste an image from the clipboard as an attachment |
+
+The agent can call **`ask_user`** when it genuinely needs a decision from you. A modal dialog offers the suggested choices plus a free-text answer field.
 
 ## Troubleshooting
 
@@ -170,7 +183,7 @@ This project is free software distributed under the **GNU General Public License
 ```
 main.py                      entry point / QApplication setup
 app/config.py                settings dataclass + persistence
-app/project.py               project folder, scaffolding, path sandbox
+app/project.py               project folders, external web roots, scaffolding, path sandbox
 app/php_server.py            PHP dev server + line-buffered log capture
 app/capture.py               full-page desktop/phone/slice capture
 app/utils.py                 image scaling, data URIs, formatting
@@ -183,6 +196,7 @@ app/chat/
   tokens.py                  context estimates
 app/tools/
   files.py                   read/write/edit/delete/grep/search/list tools
+  git_tools.py               git commit restricted to public web files
   registry.py                tool schemas, dispatch, background worker
   websearch.py               DuckDuckGo requests fallback
 app/ui/
@@ -190,6 +204,7 @@ app/ui/
   settings_dialog.ui/.py     endpoint, context, timeout, advanced settings
   new_project_dialog.ui/.py  project creation
   log_dialog.ui/.py          PHP/server log viewer
+  ask_user_dialog.ui/.py     agent question dialog with choices + free answer
   chat_view.py               message cards, streaming rendering, images
   webview.py                 QWebEngineView with JS console capture
   search_view.py             hidden DuckDuckGo browser + result extraction

@@ -109,7 +109,7 @@ class PhpServer(QObject):
         try:
             self._proc = subprocess.Popen(
                 cmd,
-                cwd=str(project_root),
+                cwd=str(self._web_dir),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
